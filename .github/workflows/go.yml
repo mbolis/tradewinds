@@ -1,7 +1,4 @@
-# This workflow will build a golang project
-# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-go
-
-name: Go
+name: Build and publish
 
 on:
   push:
@@ -12,15 +9,16 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    
+
+    permissions:
+      contents: write
+
     steps:
     - name: Must start from tag
+      if: github.ref_type != 'tag'
       run: |
-        echo "Ref is $GITHUB_REF"
-        if [[ "$GITHUB_REF" != refs/tags/* ]] ; then
-          echo "Not a tag. Failing!"
-          exit 1
-        fi
+        echo "Not a tag. Failing!"
+        exit 1
 
     - name: Checkout code
       uses: actions/checkout@v4
@@ -30,19 +28,10 @@ jobs:
       with:
         go-version: '1.24'
 
-    - name: Cache Go modules
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.cache/go-build
-          ~/go/pkg/mod
-        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-        restore-keys: |
-          ${{ runner.os }}-go-
-    
     - name: Install system dependencies
-      run: |
-        sudo apt install -y \
+      uses: awalsh128/cache-apt-pkgs-action@v1
+      with:
+        packages: |
           libc6-dev \
           libgl1-mesa-dev \
           libxcursor-dev \
@@ -52,20 +41,22 @@ jobs:
           libxxf86vm-dev \
           libasound2-dev \
           pkg-config
+        version: 1.0
 
-    - name: Build for Linux
-      env:
-        GOOS: linux
-        GOARCH: amd64
-      run: |
-        go build -o tradewinds .
+    # - name: Cache Go modules
+    #   uses: actions/cache@v4
+    #   with:
+    #     path: |
+    #       ~/.cache/go-build
+    #       ~/go/pkg/mod
+    #     key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+    #     restore-keys: |
+    #       ${{ runner.os }}-go-
 
-    - name: Build for Windows
-      env:
-        GOOS: windows
-        GOARCH: amd64
+    - name: Build
       run: |
-        go build -o tradewinds.exe .
+        GOOS=linux GOARCH=amd64 go build -o tradewinds .
+        GOOS=windows GOARCH=amd64 go build -o tradewinds.exe .
 
     - name: Changelog
       id: changelog
@@ -73,36 +64,24 @@ jobs:
         v: ${{ github.ref_name }}
       run: |
         v=${v%%-*}
-        echo changelog=$(sed -n '/^## \['$v'[]-]/,/^## \[/{/^## \['$v'/p;/^## \[/!p}') >> $GITHUB_OUTPUT
+        changelog=$(sed -n '/^## \['$v'[]-]/,/^## \[/{/^## \['$v'/p;/^## \[/!p}' CHANGELOG.md | sed 's/^##/#/;/^EOF/d')
+        echo "${changelog}"
+        
+        echo "version=${v}" >> $GITHUB_OUTPUT
 
-    - name: Draft release if not existing
-      id: create_release
-      uses: actions/create-release@v1
-      env:
-          GITHUB_TOKEN: ${{ github.token }}
+        echo "changelog<<EOF" >> $GITHUB_OUTPUT
+        echo "${changelog}" >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
+
+    - name: Publish release
+      uses: softprops/action-gh-release@v2
       with:
-        tag_name: ${{ github.ref_name }}
-        release_name: Release ${{ steps.changelog.outputs.changelog }}
+        name: ${{ steps.changelog.outputs.version }}
+        body: |
+          ${{ steps.changelog.outputs.changelog }}
         draft: true
-        body_path: CHANGELOG.md
-
-    - name: Upload Linux binary
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ github.token }}
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: ./tradewinds
-        asset_name: tradewinds
-        asset_content_type: application/octet-stream
-
-    - name: Upload Windows binary
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ github.token }}
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: ./tradewinds.exe
-        asset_name: tradewinds.exe
-        asset_content_type: application/octet-stream
-
+        files: |
+          tradewinds
+          tradewinds.exe
+          LICENSE
+        preserve_order: true
